@@ -1,0 +1,15 @@
+# 全局配置：脚本只读这里，参数不进代码
+universe: csi500          # 股票池
+start: "2015-01-01"
+end: "2024-12-31"
+rebalance: monthly        # monthly | weekly | daily
+cost_bps: 15              # 单边成本，基点
+top_n: 100                # 组合持仓数
+neutralize: true          # 是否做行业/市值中性化
+
+factors:
+  - EP
+  - ROE_TTM
+  - MOM_12_1
+  - REV_1M
+  - TURN_20

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# 环境与密钥
+.venv/
+env/
+.env
+config/local.yaml
+
+# 数据：体积大、可能有版权，不入库
+data/raw/
+data/interim/
+results/
+
+# 生成的图表
+reports/*.png
+reports/*.pdf
+reports/*.html
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# PyCharm
+.idea/
