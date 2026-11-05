@@ -60,20 +60,16 @@ pip install numpy pandas pyarrow matplotlib scipy statsmodels jupyterlab ipykern
 
 > 需要 2000 积分以获得必要的权限（下载数据不扣积分）。2000积分的限制频次为 200 次/分钟，财务 80 次/分钟，每天调用总量 10 万次/接口。学生可以通过 [学生积分](https://tushare.pro/document/1?doc_id=360) 免费拿 2000 分。
 
-### 0. 先探测权限
+### 1. 探测权限
 
 ```powershell
-cd "E:\大学资料\1量化\ashare-multifactor-lab"
 python src/mfl/data/fetch.py probe
 ```
 
-`probe` 每个接口打一发，输出 `OK / DENIED`，不落盘。重点看：
+`probe` 会在每个接口尝试调用一次，输出 `OK / DENIED`。
 
-- `daily_basic`：没有就没有市值/换手/PE/PB；
-- `income`、`balancesheet`：没有就只能用 `roe_yearly`，不是真 TTM；
-- `index_weight`：没有就没有历史成分股，只能拿当前成分股回测，有幸存者偏差。
 
-### 1. 配置 token
+### 2. 配置 token
 
 ```powershell
 # 方式 A：环境变量（设置后要重开终端）
@@ -87,68 +83,48 @@ copy config\local.example.yaml config\local.yaml
 python src/mfl/data/fetch.py probe --token 你的token
 ```
 
-### 2. 基础数据（约 15 次请求）
+### 3. 下载数据
 
 ```powershell
+#基础数据（约 15 次请求）
 python src/mfl/data/fetch.py calendar --start 20150101 --end 20241231
 python src/mfl/data/fetch.py basic
-```
 
-### 3. 行情（约 4900 次请求，30–40 分钟）
-
-```powershell
+#行情（约 4900 次请求，30–40 分钟）
 python src/mfl/data/fetch.py price --start 20150101 --end 20241231
-```
 
-`price` 只抓 `daily` 和 `adj_factor`。每日指标单独抓：
-
-```powershell
+#price只抓取 `daily` 和 `adj_factor`。每日指标单独抓
 python src/mfl/data/fetch.py metrics --start 20150101 --end 20241231
-```
 
-### 4. 指数（约 120 次请求，先跑）
-
-```powershell
+#指数：抓中证500日线和月度成分股。（约 120 次请求，必须先于财务三大表获得）
 python src/mfl/data/fetch.py index --start 20150101 --end 20241231
-```
 
-抓中证500 日线和月度成分股。**先跑这一步**：后面的财务按股票抓，会优先用这里的成分股并集（约 1500–2000 只），比全市场少一个数量级。
-
-### 5. 财务三大表（按股票抓，约 1–1.5 小时）
-
-```powershell
+#财务三大表（按股票抓，约 1–1.5 小时）
 python src/mfl/data/fetch.py financials --start 20150101 --end 20241231
-```
 
-2000 积分档的 `income` / `balancesheet` / `cashflow` **只支持单只股票查询**；按报告期拉全市场要用 `income_vip` 等接口（5000 分）。所以脚本改成逐只抓：
-
-- 有 `index_weight`：只抓中证500 历史成分股并集，3 张表约 5000–6000 次请求，1–1.5 小时；
-- 没有成分股：退回全市场约 5400 只，3 张表约 1.6 万次请求，3–4 小时；
-- 每 200 只落一次盘，中断后重跑会从断点继续。
-
-可选的财务指标（ROE、毛利率、负债率）也按股票抓：
-
-```powershell
+#可选的财务指标（ROE、毛利率、负债率），按股票抓
 python src/mfl/data/fetch.py fundamental --start 20150101 --end 20241231
+
+#涨跌停和停牌
+python src/mfl/data/fetch.py tradability --start 20150101 --end 20241231
 ```
 
-### 6. 一次性下载全部
+2000 积分档的 `income` / `balancesheet` / `cashflow` **只支持单只股票查询**；按报告期拉全市场要用 `income_vip` 等接口（5000 分）。所以脚本改成逐只抓，每 200 只落一次盘，中断后重跑会从断点继续。
+
+
+### 4. 一次性下载全部
 
 ```powershell
 python src/mfl/data/fetch.py all --start 20150101 --end 20241231
 ```
 
-`all` 按顺序抓基础数据、行情、每日指标、指数、三大表、fina_indicator；某个接口没权限会打 ERROR 并跳过，不会中断。总共约 1.4–1.5 万次请求，2.5–3 小时（没有成分股会到 5–6 小时）。
+`all` 按顺序抓基础数据、行情、每日指标、涨跌停/停牌、指数、三大表、fina_indicator；某个接口没权限会打 ERROR 并跳过，不会中断。总共约 1.7 万次请求，3–3.5 小时。
 
-涨跌停和停牌单独抓（可选，约 4900 次请求）：
 
-```powershell
-python src/mfl/data/fetch.py tradability --start 20150101 --end 20241231
-```
 
-### 7. 落盘结构
+### 7. 数据目录
 
-`data/raw/` 是原始快照，只增不改；清洗逻辑改了也不用重新下载。
+`data/raw/` 是原始数据快照，只增不改；清洗逻辑改了也不用重新下载。
 
 ```text
 data/raw/

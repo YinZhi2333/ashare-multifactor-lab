@@ -584,7 +584,7 @@ def run_all(client: Client, args: argparse.Namespace) -> None:
     is_open = pd.to_numeric(cal["is_open"], errors="coerce").fillna(0).astype(int)
     mask = (is_open == 1) & (cal["cal_date"] >= args.start) & (cal["cal_date"] <= args.end)
     dates = sorted(cal.loc[mask, "cal_date"].astype(str).tolist())
-    LOG.info("交易日 %d 天，行情类约需 %d 次请求", len(dates), len(dates) * 3)
+    LOG.info("交易日 %d 天，行情/可交易性约需 %d 次请求", len(dates), len(dates) * 5)
 
     steps = [
         ("stock_basic", lambda: fetch_basic(client, args.force)),
@@ -592,6 +592,8 @@ def run_all(client: Client, args: argparse.Namespace) -> None:
         ("daily", lambda: fetch_by_date(client, "daily", "daily", dates, args.force)),
         ("adj_factor", lambda: fetch_by_date(client, "adj_factor", "adj_factor", dates, args.force)),
         ("daily_basic", lambda: fetch_by_date(client, "daily_basic", "daily_basic", dates, args.force)),
+        ("stk_limit", lambda: fetch_by_date(client, "stk_limit", "stk_limit", dates, args.force)),
+        ("suspend_d", lambda: fetch_by_date(client, "suspend_d", "suspend_d", dates, args.force)),
         ("index", lambda: fetch_index(client, args.start, args.end, args.force)),
         ("financials", lambda: fetch_financials(client, args.start, args.end, args.force)),
         ("fina_indicator", lambda: fetch_fundamental(client, args.start, args.end, args.force)),
@@ -629,7 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("tradability", parents=[common], help="涨跌停价 + 停牌")
     sub.add_parser("index", parents=[common], help="中证500 行情 + 历史成分股")
     sub.add_parser("fundamental", parents=[common], help="fina_indicator（可选，逐只股票）")
-    sub.add_parser("all", parents=[common], help="按顺序抓全部（不含 tradability）")
+    sub.add_parser("all", parents=[common], help="按顺序抓全部（含涨跌停/停牌）")
     return parser
 
 
