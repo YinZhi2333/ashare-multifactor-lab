@@ -9,6 +9,7 @@
     python src/mfl/data/fetch.py probe                           # 先探测权限
     python src/mfl/data/fetch.py calendar     --start 20150101 --end 20241231
     python src/mfl/data/fetch.py basic
+    python src/mfl/data/fetch.py names        --start 20150101 --end 20241231
     python src/mfl/data/fetch.py price        --start 20150101 --end 20241231
     python src/mfl/data/fetch.py metrics      --start 20150101 --end 20241231
     python src/mfl/data/fetch.py financials   --start 20150101 --end 20241231
@@ -17,6 +18,11 @@
     python src/mfl/data/fetch.py all          --start 20150101 --end 20241231
 
 Token 优先级：``--token`` > 环境变量 ``TUSHARE_TOKEN`` > ``config/local.yaml``。
+
+增量粒度因接口而异：行情按已有交易日跳过，指数成分按已有月份跳过，
+财务按已有股票跳过；这些标记不等于完整性校验，不会自动修补半天行情
+或给已抓股票追加新季度。basic 等接口仍会重新请求，具体边界见函数说明。
+raw 保留数据商原始字段与日期格式，复权、单位换算和 PIT 可用性由下游负责。
 
 落盘结构::
 
@@ -41,12 +47,14 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import tempfile
 import time
 from pathlib import Path
 
 import pandas as pd
 import yaml
 
+# 抓取脚本独立维护落盘路径；清洗模块复用 common，抓取层不依赖清洗结果定义。
 ROOT = Path(__file__).resolve().parents[3]
 RAW = ROOT / "data" / "raw"
 INTERIM = ROOT / "data" / "interim"
@@ -55,12 +63,18 @@ INDEX_CODE = "000905.SH"  # 中证500
 
 LOG = logging.getLogger("fetch")
 
+NAMECHANGE_COLS = ["ts_code", "name", "start_date", "end_date", "ann_date", "change_reason"]
+
 
 # --------------------------------------------------------------------------
 # token
 # --------------------------------------------------------------------------
 def load_token(cli_token: str | None = None) -> str:
-    """按优先级取 token；都没有就给出清楚的设置说明。"""
+    """按 CLI → 环境变量 → 本地 YAML 取 token，缺失时退出并给出配置说明。
+
+    返回值只用于初始化客户端，不应写入日志。日常使用优先配置环境变量
+    或 local.yaml，避免把密钥留在命令历史中。
+    """
     if cli_token:
         return cli_token.strip()
 
@@ -90,9 +104,17 @@ class RateLimited(RuntimeError):
 
 
 class Client:
-    """薄封装：统一处理限速、网络重试、权限错误。"""
+    """封装 Tushare 调用，集中处理请求间隔、重试及可识别的服务端错误。
+
+    sleep 是成功请求后的默认等待秒数，retries 是一次 call 的总尝试次数。
+    calls 只统计成功返回的调用，失败尝试不计入；它不是精确的配额计数器。
+    """
 
     def __init__(self, token: str, sleep: float = 0.4, retries: int = 3) -> None:
+        """初始化客户端；默认成功后等待 0.4 秒，单次调用最多尝试 3 次。
+
+        财务抓取会用单次调用的 _interval=0.8 覆盖默认等待，以满足更低限频。
+        """
         try:
             import tushare as ts
         except ImportError as exc:  # pragma: no cover
@@ -105,6 +127,12 @@ class Client:
         self.calls = 0
 
     def call(self, api: str, _interval: float | None = None, **kwargs) -> pd.DataFrame:
+        """调用 api 并返回 DataFrame，None 响应转为空表。
+
+        _interval 仅控制本次成功后的等待，其余 kwargs 原样传给数据商。
+        权限、必填参数、小时限频错误立即抛给上层；分钟限频等待 61 秒，
+        其他异常采用上限 30 秒的指数退避，耗尽尝试后带原异常抛出。
+        """
         fn = getattr(self.pro, api, None)
         if fn is None:
             raise AttributeError(f"tushare 没有接口 {api}")
@@ -154,10 +182,15 @@ class Client:
 # 读写小工具
 # --------------------------------------------------------------------------
 def _read(path: Path) -> pd.DataFrame | None:
+    """读取已有 raw 文件；文件缺失返回 None，其他读盘错误向上抛出。"""
     return pd.read_parquet(path) if path.exists() else None
 
 
 def _write(df: pd.DataFrame, path: Path) -> None:
+    """创建目录并写入 raw 快照；增量合并、去重由具体抓取函数先完成。
+
+    写盘会替换目标文件，且不是临时文件替换流程；不在此处清洗数据字段。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
 
@@ -166,6 +199,7 @@ def _write(df: pd.DataFrame, path: Path) -> None:
 # 日历 / 股票列表
 # --------------------------------------------------------------------------
 def _covers(df: pd.DataFrame | None, start: str, end: str) -> bool:
+    """判断日历最早/最晚日期是否包住区间；不检查区间内部是否缺日。"""
     if df is None or df.empty or "cal_date" not in df.columns:
         return False
     dates = df["cal_date"].astype(str)
@@ -173,7 +207,11 @@ def _covers(df: pd.DataFrame | None, start: str, end: str) -> bool:
 
 
 def fetch_calendar_akshare(start: str, end: str) -> pd.DataFrame:
-    """Tushare 日历接口受限时的兜底：AkShare 免费、不限频。"""
+    """用 AkShare 的历史交易日补成含休市日的区间日历，返回而不落盘。
+
+    输出与 trade_cal 使用相同的列；pretrade_date 无对应来源，暂留空字符串。
+    此路径仍可能联网，与 universe 读取包内离线 calendar.json 的用途不同。
+    """
     try:
         import akshare as ak
     except ImportError as exc:
@@ -188,6 +226,7 @@ def fetch_calendar_akshare(start: str, end: str) -> pd.DataFrame:
         freq="D",
     )
     cal = pd.DataFrame({"cal_date": days.strftime("%Y%m%d").tolist()})
+    # 自然日全集与交易日集合做成员匹配，显式保留周末、节假日等休市记录。
     cal["is_open"] = cal["cal_date"].isin(open_days).astype(int)
     cal["exchange"] = "SSE"
     cal["pretrade_date"] = ""
@@ -195,6 +234,11 @@ def fetch_calendar_akshare(start: str, end: str) -> pd.DataFrame:
 
 
 def fetch_calendar(client: Client, start: str, end: str, force: bool = False) -> pd.DataFrame:
+    """优先返回已覆盖区间的本地日历，否则抓取、合并并写入 raw。
+
+    Tushare 权限或运行错误时告警并走 AkShare 兜底。force=True 忽略旧文件；
+    默认合并时旧记录在前，同一 cal_date 优先保留本地值。
+    """
     path = RAW / "trade_cal" / "data.parquet"
     old = None if force else _read(path)
 
@@ -230,6 +274,7 @@ def fetch_calendar(client: Client, start: str, end: str, force: bool = False) ->
 
 
 def get_trade_dates(client: Client, start: str, end: str, force: bool = False) -> list[str]:
+    """确保日历可用，返回闭区间内排序后的 YYYYMMDD 交易日字符串。"""
     cal = fetch_calendar(client, start, end, force=force)
     is_open = pd.to_numeric(cal["is_open"], errors="coerce").fillna(0).astype(int)
     mask = (is_open == 1) & (cal["cal_date"] >= start) & (cal["cal_date"] <= end)
@@ -237,7 +282,11 @@ def get_trade_dates(client: Client, start: str, end: str, force: bool = False) -
 
 
 def fetch_basic(client: Client, force: bool = False) -> None:
-    """L=上市，D=退市，P=暂停上市。必须把 D 也抓下来，否则有幸存者偏差。"""
+    """请求 L=上市、D=退市、P=暂停上市三类股票，保存当前基础信息快照。
+
+    包含退市股以减少幸存者偏差；name/industry 等仍是当前属性，不能当作
+    历史状态。force 为调用接口兼容参数，本函数无论其值如何均请求并写盘。
+    """
     frames = []
     for status in ("L", "D", "P"):
         df = client.call(
@@ -262,25 +311,146 @@ def fetch_basic(client: Client, force: bool = False) -> None:
     LOG.info("stock_basic：%d 只（%s）", len(out), counts)
 
 
-def fetch_namechange(client: Client, start: str, end: str, force: bool = False) -> None:
-    """更名记录，用来还原历史 ST 状态。"""
+def _namechange_members() -> set[str]:
+    """以本地历史 index_weight 并集限制名称范围，不用当前500只或请求子区间。
+
+    白名单缺失时拒绝清理/抓取，避免用不完整回退名单误删历史成员。
+    """
+    iw = _read(RAW / "index_weight" / f"index_code={INDEX_CODE}" / "data.parquet")
+    if iw is None or iw.empty or "con_code" not in iw:
+        raise FileNotFoundError("namechange 需要本地完整 index_weight 历史名单，禁止无白名单清理或抓取")
+    members = set(iw["con_code"].dropna().astype(str).str.strip()) - {""}
+    if not members:
+        raise ValueError("index_weight 没有有效历史成员，禁止清理或抓取名称")
+    return members
+
+
+def _scope_namechange(df: pd.DataFrame, members: set[str]) -> pd.DataFrame:
+    """仅按股票范围过滤，保留池内股票的全部历史区间、字段及记录。"""
+    if not set(NAMECHANGE_COLS).issubset(df.columns):
+        raise ValueError("已有 namechange 缺必要原始字段，停止以避免损坏旧数据")
+    kept = df.loc[df["ts_code"].isin(members)].copy()
+    removed = len(df) - len(kept)
+    if removed:
+        LOG.info("namechange 范围检查：池外 %d 行、%d 只将清除；池内保留 %d 行、%d 只", removed,
+                 df.loc[~df["ts_code"].isin(members), "ts_code"].nunique(), len(kept), kept["ts_code"].nunique())
+    return kept
+
+
+def _namechange_targets(start: str, end: str) -> pd.DataFrame:
+    """只从本地历史成分股确定研究日期，不因缺股票池而默认抓全市场。"""
+    iw = _read(RAW / "index_weight" / f"index_code={INDEX_CODE}" / "data.parquet")
+    if iw is not None and not iw.empty:
+        targets = iw[["con_code", "trade_date"]].rename(columns={"con_code": "ts_code", "trade_date": "date"})
+        targets["date"] = pd.to_datetime(targets["date"], format="%Y%m%d").astype("datetime64[ns]")
+    else:
+        uni = _read(INTERIM / "universe.parquet")
+        if uni is None or uni.empty:
+            raise FileNotFoundError("namechange 需要本地 index_weight/universe；先抓 index，或用 names --codes 指定股票")
+        targets = uni[["code", "date"]].rename(columns={"code": "ts_code"}).copy()
+        targets["date"] = pd.to_datetime(targets["date"]).astype("datetime64[ns]")
+    lo, hi = pd.to_datetime(start, format="%Y%m%d"), pd.to_datetime(end, format="%Y%m%d")
+    targets = targets.loc[targets["date"].between(lo, hi)].drop_duplicates()
+    if targets.empty:
+        raise ValueError("指定研究区间没有本地历史成分股，不能判断名称缺口")
+    return targets.reset_index(drop=True)
+
+
+def _namechange_gaps(targets: pd.DataFrame, names: pd.DataFrame | None) -> list[str]:
+    """研究日期无有效已知名称或有冲突时补抓，不把出现过股票代码当成完整。"""
+    if names is None or names.empty:
+        return sorted(targets["ts_code"].unique())
+    nc = names[NAMECHANGE_COLS].copy()
+    for col in ["start_date", "end_date", "ann_date"]:
+        nc[col] = pd.to_datetime(nc[col], format="%Y%m%d", errors="coerce").astype("datetime64[ns]")
+    nc["known_from"] = nc[["start_date", "ann_date"]].max(axis=1)
+    nc = nc.dropna(subset=["ts_code", "start_date", "name"])
+    if nc.empty:
+        return sorted(targets["ts_code"].unique())
+    nc = nc.sort_values(["known_from", "start_date", "ts_code"], kind="stable")
+    # 与当前股票池保持相同的保守判定；缺口判定不是全名称链完整性的证明。
+    conflict = nc.groupby(["ts_code", "known_from"])["name"].transform("nunique").gt(1)
+    nc.loc[conflict, "name"] = pd.NA
+    nc = nc.drop_duplicates(["ts_code", "known_from"], keep="last")
+    matched = pd.merge_asof(
+        targets.sort_values("date"),
+        nc[["ts_code", "name", "known_from", "end_date"]].sort_values("known_from"),
+        by="ts_code", left_on="date", right_on="known_from", direction="backward",
+    )
+    valid = (
+        matched["name"].notna() & matched["name"].astype("string").str.strip().ne("").fillna(False)
+        & (matched["end_date"].isna() | matched["end_date"].ge(matched["date"]))
+    )
+    return sorted(matched.loc[~valid, "ts_code"].unique())
+
+
+def _save_namechange(df: pd.DataFrame, path: Path) -> None:
+    """仅替换同一个名称文件；写完临时文件后再替换，失败时保留旧文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(prefix="namechange-", suffix=".tmp", dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+    try:
+        df.to_parquet(temporary, index=False)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def fetch_namechange(
+    client: Client, start: str, end: str, force: bool = False,
+    codes: list[str] | None = None,
+) -> None:
+    """逐股请求完整名称链，增量合入原 namechange/data.parquet。
+
+    start/end 只选择本地研究日期，绝不传给名称接口，否则会漏掉起点前名称。
+    默认仅查询研究日期存在缺口的股票；显式 codes 用于少量验证或主动刷新。
+    force 仅重新查询目标股票，不能绕过历史成员白名单。仅保留本地历史
+    index_weight 并集内的股票，池内的所有旧区间/公告/原因均保留。
+    完整相同记录去重；源数据冲突由加工层判断，不在抓取层覆盖旧值。
+    每只成功后保存一次；空响应保留旧数据、继续列入缺口，不记成已完成。
+    """
+    if pd.to_datetime(start, format="%Y%m%d") > pd.to_datetime(end, format="%Y%m%d"):
+        raise ValueError("start 不能晚于 end")
     path = RAW / "namechange" / "data.parquet"
-    old = None if force else _read(path)
-    frames = [] if old is None or old.empty else [old]
-
-    for year in range(int(start[:4]), int(end[:4]) + 1):
-        df = client.call("namechange", start_date=f"{year}0101", end_date=f"{year}1231")
-        if not df.empty:
-            frames.append(df)
-
-    if not frames:
-        LOG.warning("namechange：没有拿到数据")
-        return
-
-    out = pd.concat(frames, ignore_index=True)
-    out = out.drop_duplicates(["ts_code", "ann_date", "name"]).sort_values(["ts_code", "ann_date"])
-    _write(out, path)
-    LOG.info("namechange：%d 行", len(out))
+    members = _namechange_members()
+    old = _read(path)
+    out = _scope_namechange(old, members) if old is not None else pd.DataFrame(columns=NAMECHANGE_COLS)
+    targets = None
+    if codes is not None:
+        todo = sorted({code.strip().upper() for code in codes if code.strip()})
+        if not todo:
+            raise ValueError("--codes 不能为空")
+        outsiders = set(todo) - members
+        if outsiders:
+            raise ValueError(f"--codes 含 {len(outsiders)} 只历史中证500池外股票，拒绝请求及写盘")
+    else:
+        targets = _namechange_targets(start, end)
+        targets = targets.loc[targets["ts_code"].isin(members)]
+        todo = sorted(targets["ts_code"].unique()) if force else _namechange_gaps(targets, out)
+    # 即使所有研究日期已覆盖、不需要联网，也应清除已有池外数据。
+    if old is not None and len(out) != len(old):
+        out = out.reset_index(drop=True)
+        _save_namechange(out, path)
+    LOG.info("namechange 待查询 %d 只，已有 %d 行；按代码取全部历史，不使用公告日期过滤", len(todo), len(out))
+    for i, code in enumerate(todo, 1):
+        df = client.call("namechange", ts_code=code, fields=",".join(NAMECHANGE_COLS))
+        if df.empty:
+            LOG.warning("namechange %s 返回空表；旧记录保留，未确认完整", code)
+            continue
+        if not set(NAMECHANGE_COLS).issubset(df.columns) or not df["ts_code"].eq(code).all():
+            raise ValueError(f"namechange {code} 响应字段不齐或混入其他股票；停止，保留此前已保存数据")
+        df = df[NAMECHANGE_COLS].copy()
+        merged = pd.concat([out, df], ignore_index=True).drop_duplicates()
+        added = len(merged) - len(out.drop_duplicates())
+        if added:
+            out = merged.sort_values(["ts_code", "start_date", "ann_date"], kind="stable").reset_index(drop=True)
+            _save_namechange(out, path)
+        LOG.info("namechange %d/%d %s：返回 %d 行，新增 %d 行，累计 %d 行", i, len(todo), code, len(df), added, len(out))
+    LOG.info("namechange 查询结束：%d 行、%d 只历史成员；池外股票 0 只，原始字段和路径不变", len(out), out["ts_code"].nunique())
+    if targets is not None:
+        gaps = _namechange_gaps(targets, out)
+        if gaps:
+            LOG.warning("研究日期仍有名称缺口的股票 %d 只；查询结束不代表覆盖完整", len(gaps))
 
 
 # --------------------------------------------------------------------------
@@ -293,7 +463,13 @@ def fetch_by_date(
     dates: list[str],
     force: bool = False,
 ) -> None:
-    """按年分区，增量抓取。已有年份只补缺失的交易日。"""
+    """逐交易日抓取行情类接口，合并后按年保存 raw 分区。
+
+    api 为接口名，table 为落盘目录名，dates 为 YYYYMMDD 交易日序列。
+    增量依据是文件中已出现的 trade_date：某日只要有一条记录便整日跳过，
+    不检查股票覆盖；空响应不留完成标记，重跑还会请求（停牌表尤其如此）。
+    force=True 忽略整个旧分区，因此只传入部分日期时不会保留该年其余旧行。
+    """
     if not dates:
         LOG.warning("%s：没有交易日", table)
         return
@@ -312,6 +488,7 @@ def fetch_by_date(
             LOG.info("%s %d：已完整，跳过", table, year)
             continue
 
+        # 每年缓存在内存，待该年全部请求结束才写盘；与财务定期检查点不同。
         frames = [old] if old is not None and not old.empty else []
         for i, d in enumerate(todo, 1):
             df = client.call(api, trade_date=d)
@@ -333,6 +510,10 @@ def fetch_by_date(
 # 指数：行情 + 历史成分股
 # --------------------------------------------------------------------------
 def fetch_index_daily(client: Client, start: str, end: str, force: bool = False) -> None:
+    """请求中证500 区间日线，与旧数据去重合并；不会跳过已有交易日请求。
+
+    该接口产出价格指数，不能直接视作含分红再投资的全收益基准。
+    """
     path = RAW / "index_daily" / f"ts_code={INDEX_CODE}" / "data.parquet"
     old = None if force else _read(path)
 
@@ -350,7 +531,11 @@ def fetch_index_daily(client: Client, start: str, end: str, force: bool = False)
 
 
 def fetch_index_weight(client: Client, start: str, end: str, force: bool = False) -> None:
-    """按月抓成分股快照；一次抓十年很可能被单次返回上限截断。"""
+    """按完整自然月抓成分股快照，以减小单次返回上限造成的截断风险。
+
+    默认按本地 trade_date 的 YYYYMM 跳过已有月份，不验证该月是否完整；
+    force=True 忽略旧数据，仅保存本次所请求月份的响应。
+    """
     path = RAW / "index_weight" / f"index_code={INDEX_CODE}" / "data.parquet"
     old = None if force else _read(path)
     frames = [old] if old is not None and not old.empty else []
@@ -389,6 +574,7 @@ def fetch_index_weight(client: Client, start: str, end: str, force: bool = False
 
 
 def fetch_index(client: Client, start: str, end: str, force: bool = False) -> None:
+    """分别抓指数日线与历史权重；单项权限不足时记录错误并继续另一项。"""
     for fn in (fetch_index_daily, fetch_index_weight):
         try:
             fn(client, start, end, force)
@@ -413,7 +599,7 @@ FI_FIELDS = (
     "netprofit_yoy,grossprofit_margin,netprofit_margin,debt_to_assets,eps,bps"
 )
 
-FIN_CHECKPOINT = 200
+FIN_CHECKPOINT = 200  # 每处理 200 只股票保存一次，平衡内存占用与断点损失。
 
 
 def _candidate_codes() -> list[str]:
@@ -440,6 +626,12 @@ def _candidate_codes() -> list[str]:
 
 
 def _flush_statement(frames: list[pd.DataFrame], path: Path) -> None:
+    """将财务缓冲区与已落盘数据合并，按 (股票, 报告期, 公告日) 去重。
+
+    不同 ann_date 的版本可保留；同一键的重复响应优先保留已有行。
+    键不含 f_ann_date/report_type，因此不能保证保存数据商的所有修订版本；
+    PIT 层只能在最终留存的版本内做时间对齐。
+    """
     if not frames:
         return
     old = _read(path)
@@ -459,10 +651,15 @@ def fetch_statement(
     force: bool = False,
     report_type: str | None = "1",
 ) -> None:
-    """逐只股票抓财务报表。
+    """逐只股票抓财务报表，按股票续传并定期保存。
 
     2000 积分档没有 *_vip 权限，income / balancesheet / cashflow 只接受
     ts_code，不能按 period 拉全市场。这里每 200 只落一次盘，断了重跑能续。
+
+    start/end 保留以统一命令接口，当前不传给数据商：每只股票请求可返回的
+    全部历史。文件中已出现的股票整只跳过，因此续传不会自动补其新季度。
+    report_type 默认 "1"，fina_indicator 传 None 以不发送该参数。
+    force=True 会先删除该表旧文件；仅在明确需要重抓整表时使用。
     """
     path = RAW / table / "data.parquet"
     if force and path.exists():
@@ -486,6 +683,7 @@ def fetch_statement(
             params: dict = {"ts_code": code, "fields": fields}
             if report_type:
                 params["report_type"] = report_type
+            # 财务成功后至少等待 0.8 秒，不沿用普通行情的默认 0.4 秒。
             df = client.call(api, _interval=0.8, **params)
             if not df.empty:
                 buffer.append(df)
@@ -494,10 +692,12 @@ def fetch_statement(
                 buffer = []
                 LOG.info("%s：%d/%d（已落盘）", table, i, len(codes))
     finally:
+        # 请求异常或用户中断时也保存已成功返回的缓冲区，再由原异常向上退出。
         _flush_statement(buffer, path)
 
 
 def fetch_financials(client: Client, start: str, end: str, force: bool = False) -> None:
+    """依次抓利润表、资产负债表、现金流量表，单表失败记录日志后继续。"""
     jobs = [
         ("income", "income", INCOME_FIELDS, "1"),
         ("balancesheet", "balancesheet", BS_FIELDS, "1"),
@@ -513,6 +713,7 @@ def fetch_financials(client: Client, start: str, end: str, force: bool = False) 
 
 
 def fetch_fundamental(client: Client, start: str, end: str, force: bool = False) -> None:
+    """抓可选 fina_indicator；权限不足仅记日志，不替代利润 TTM 的计算。"""
     try:
         fetch_statement(
             client,
@@ -531,9 +732,11 @@ def fetch_fundamental(client: Client, start: str, end: str, force: bool = False)
 # --------------------------------------------------------------------------
 # 权限探测
 # --------------------------------------------------------------------------
+# 用固定的小样本验证接口可访问性，不代表整个研究区间的数据覆盖完整。
 PROBE_CALLS: list[tuple[str, dict]] = [
     ("trade_cal", {"exchange": "SSE", "start_date": "20240101", "end_date": "20240110"}),
     ("stock_basic", {"list_status": "L", "fields": "ts_code,name,list_date"}),
+    ("namechange", {"ts_code": "600848.SH", "fields": ",".join(NAMECHANGE_COLS)}),
     ("daily", {"trade_date": "20240102"}),
     ("adj_factor", {"trade_date": "20240102"}),
     ("daily_basic", {"trade_date": "20240102"}),
@@ -550,7 +753,10 @@ PROBE_CRITICAL = {"daily_basic", "income", "balancesheet", "index_weight"}
 
 
 def probe(client: Client) -> None:
-    """每个接口打一发，确认当前积分到底能调什么。不落盘。"""
+    """逐接口执行小样本探测，不落盘；底层 Client 仍可能因异常重试。
+
+    OK 只表示调用成功，空表也可能为 OK，不能据此判断研究字段是否齐全。
+    """
     LOG.info("开始探测接口权限：%d 个接口，各 1 次调用", len(PROBE_CALLS))
     rows: list[tuple[str, str, str]] = []
 
@@ -580,6 +786,11 @@ def probe(client: Client) -> None:
 # 全量
 # --------------------------------------------------------------------------
 def run_all(client: Client, args: argparse.Namespace) -> None:
+    """先取日历，再按依赖顺序批量抓数；每步失败记日志并继续后续步骤。
+
+    先抓历史指数成分，再据此缩小财务股票集合；这里只隔离任务失败，
+    整个流程走到末尾不代表每张表都已成功，仍需另跑数据检查脚本。
+    """
     cal = fetch_calendar(client, args.start, args.end, force=args.force)
     is_open = pd.to_numeric(cal["is_open"], errors="coerce").fillna(0).astype(int)
     mask = (is_open == 1) & (cal["cal_date"] >= args.start) & (cal["cal_date"] <= args.end)
@@ -588,13 +799,13 @@ def run_all(client: Client, args: argparse.Namespace) -> None:
 
     steps = [
         ("stock_basic", lambda: fetch_basic(client, args.force)),
-        ("namechange", lambda: fetch_namechange(client, args.start, args.end, args.force)),
         ("daily", lambda: fetch_by_date(client, "daily", "daily", dates, args.force)),
         ("adj_factor", lambda: fetch_by_date(client, "adj_factor", "adj_factor", dates, args.force)),
         ("daily_basic", lambda: fetch_by_date(client, "daily_basic", "daily_basic", dates, args.force)),
         ("stk_limit", lambda: fetch_by_date(client, "stk_limit", "stk_limit", dates, args.force)),
         ("suspend_d", lambda: fetch_by_date(client, "suspend_d", "suspend_d", dates, args.force)),
         ("index", lambda: fetch_index(client, args.start, args.end, args.force)),
+        ("namechange", lambda: fetch_namechange(client, args.start, args.end, args.force)),
         ("financials", lambda: fetch_financials(client, args.start, args.end, args.force)),
         ("fina_indicator", lambda: fetch_fundamental(client, args.start, args.end, args.force)),
     ]
@@ -612,6 +823,11 @@ def run_all(client: Client, args: argparse.Namespace) -> None:
 # CLI
 # --------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
+    """构造子命令及共享参数；默认数据覆盖为2015—2024年，含研究预热。
+
+    正式研究从2016年开始，但抓取仍保留2015年历史。本CLI不读取base.yaml，
+    数据日期显式通过--start/--end指定，不随研究start自动缩短。
+    """
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--start", default="20150101", help="开始日期 YYYYMMDD")
     common.add_argument("--end", default="20241231", help="结束日期 YYYYMMDD")
@@ -625,6 +841,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("probe", parents=[common], help="探测各接口权限（不落盘）")
     sub.add_parser("calendar", parents=[common], help="交易日历")
     sub.add_parser("basic", parents=[common], help="股票列表 + 更名记录")
+    names = sub.add_parser(
+        "names", parents=[common], help="仅补历史名称缺口，合入原文件",
+        description="仅保留本地历史中证500成员的完整名称历史；start/end用于选择研究日期，不缩减保存的历史成员并集。",
+    )
+    names.add_argument("--codes", nargs="+", default=None, help="指定白名单内股票验证/刷新，池外代码报错；默认只补研究日期缺口")
     sub.add_parser("price", parents=[common], help="daily + adj_factor")
     sub.add_parser("metrics", parents=[common], help="daily_basic（市值/换手/PE/PB）")
     sub.add_parser("financials", parents=[common], help="income + balancesheet + cashflow")
@@ -636,7 +857,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
+    """解析子命令、初始化客户端并分派抓取任务；argv=None 时读取终端参数。"""
+    parser = build_parser()
+    args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(levelname)-7s %(message)s",
@@ -658,6 +881,11 @@ def main(argv: list[str] | None = None) -> None:
             fetch_namechange(client, args.start, args.end, args.force)
         except PermissionError as exc:
             LOG.error("namechange 权限不足，跳过：%s", exc)
+        except FileNotFoundError as exc:
+            LOG.warning("股票列表已保存，更名记录尚未抓取：%s", exc)
+
+    elif args.command == "names":
+        fetch_namechange(client, args.start, args.end, args.force, codes=args.codes)
 
     elif args.command == "price":
         dates = get_trade_dates(client, args.start, args.end, args.force)

@@ -1,0 +1,19 @@
+version: 1
+stage: raw_factors
+factors: [EP, ROE_TTM, MOM_12_1, REV_1M, TURN_20]
+# 只定义因子中的方向，不做去极值、标准化或中性化。
+directions: {EP: 1, ROE_TTM: 1, MOM_12_1: 1, REV_1M: -1, TURN_20: -1}
+financial:
+  market_cap_unit: 10000.0  # total_mv万元转元，与PIT利润单位一致
+  max_report_age_days: 550  # 距报告期末超过约18个月即不用；事前固定
+momentum:
+  lookback_months: 12
+  skip_months: 1
+reversal:
+  lookback_months: 1
+turnover:
+  window: 20
+  percent_unit: 100.0
+price_windows:
+  require_complete: true
+

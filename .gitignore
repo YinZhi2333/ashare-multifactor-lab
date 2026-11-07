@@ -13,6 +13,7 @@ config/local.yaml
 # 数据：体积大、可能有版权，不入库
 data/raw/
 data/interim/
+data/processed/
 results/
 
 # 生成的图表

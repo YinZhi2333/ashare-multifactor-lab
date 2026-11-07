@@ -1,0 +1,230 @@
+version: 1
+description: 2026-11-07本地19条审计处置；normalize是连续性推断，不代表数据商已确认。raw不变，日期为边界当日起生效。
+events:
+- id: 000998.SZ_20180823
+  code: 000998.SZ
+  date: '20180823'
+  previous_date: '20180815'
+  expected_previous_factor: 11.107
+  expected_factor: 10.8142
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 000998.SZ_20180828
+  code: 000998.SZ
+  date: '20180828'
+  previous_date: '20180827'
+  expected_previous_factor: 10.8142
+  expected_factor: 11.107
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 600733.SH_20180927
+  code: 600733.SH
+  date: '20180927'
+  previous_date: '20180201'
+  expected_previous_factor: 2.34
+  expected_factor: 9.36
+  action: quarantine
+  status: unresolved_corporate_action
+  reason: 股改权益倍率待确认；事件日复权价留空，禁止跨事件窗口
+  evidence:
+  - https://static.cninfo.com.cn/finalpage/2018-09-26/1205465503.PDF
+- id: 000998.SZ_20200102
+  code: 000998.SZ
+  date: '20200102'
+  previous_date: '20191231'
+  expected_previous_factor: 11.267
+  expected_factor: 10.97
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 600936.SH_20200102
+  code: 600936.SH
+  date: '20200102'
+  previous_date: '20191231'
+  expected_previous_factor: 1.02
+  expected_factor: 1.021
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 603305.SH_20200102
+  code: 603305.SH
+  date: '20200102'
+  previous_date: '20191231'
+  expected_previous_factor: 1.013
+  expected_factor: 1.014
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 603596.SH_20200102
+  code: 603596.SH
+  date: '20200102'
+  previous_date: '20191231'
+  expected_previous_factor: 1.003
+  expected_factor: 1.004
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 000998.SZ_20210107
+  code: 000998.SZ
+  date: '20210107'
+  previous_date: '20210106'
+  expected_previous_factor: 10.97
+  expected_factor: 11.267
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 300724.SZ_20210107
+  code: 300724.SZ
+  date: '20210107'
+  previous_date: '20210106'
+  expected_previous_factor: 1.009
+  expected_factor: 1.008
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 603305.SH_20210107
+  code: 603305.SH
+  date: '20210107'
+  previous_date: '20210106'
+  expected_previous_factor: 1.014
+  expected_factor: 1.013
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 002920.SZ_20220530
+  code: 002920.SZ
+  date: '20220530'
+  previous_date: '20220527'
+  expected_previous_factor: 1.028
+  expected_factor: 1.027
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 300919.SZ_20220530
+  code: 300919.SZ
+  date: '20220530'
+  previous_date: '20220527'
+  expected_previous_factor: 1.003
+  expected_factor: 1.002
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 300957.SZ_20220530
+  code: 300957.SZ
+  date: '20220530'
+  previous_date: '20220527'
+  expected_previous_factor: 1.006
+  expected_factor: 1.005
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 688005.SH_20220530
+  code: 688005.SH
+  date: '20220530'
+  previous_date: '20220527'
+  expected_previous_factor: 1.005
+  expected_factor: 1.006
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 688536.SH_20220530
+  code: 688536.SH
+  date: '20220530'
+  previous_date: '20220527'
+  expected_previous_factor: 1.001
+  expected_factor: 1.002
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 688778.SH_20220530
+  code: 688778.SH
+  date: '20220530'
+  previous_date: '20220527'
+  expected_previous_factor: 1.007
+  expected_factor: 1.006
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 000998.SZ_20230601
+  code: 000998.SZ
+  date: '20230601'
+  previous_date: '20230531'
+  expected_previous_factor: 11.267
+  expected_factor: 10.97
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 688002.SH_20230601
+  code: 688002.SH
+  date: '20230601'
+  previous_date: '20230531'
+  expected_previous_factor: 1.006
+  expected_factor: 1.005
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
+- id: 688006.SH_20230601
+  code: 688006.SH
+  date: '20230601'
+  previous_date: '20230531'
+  expected_previous_factor: 1.011
+  expected_factor: 1.012
+  action: normalize
+  status: local_continuity_inference
+  reason: 参考前收未变但累计因子基准切换；在加工层消除边界倍率并保留其他日期相对变化
+  evidence:
+  - https://tushare.pro/document/2?doc_id=27
+  - reports/adj_factor_member_review_20261107.md
